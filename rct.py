@@ -4,7 +4,7 @@ import sys
 import pygame
 
 # --- Constants ---
-WIDTH, HEIGHT = 800, 600
+WIDTH, HEIGHT = 1280, 720
 FPS = 60
 
 # Colors (RGB)
@@ -146,14 +146,14 @@ def get_common_tangents(c1, c2):
 
 class State:
     def __init__(self):
-        self.start_pos = (100, 300)
+        self.start_pos = (100, HEIGHT // 2)
         self.start_angle = 0
-        self.target_pos = (700, 300)
+        self.target_pos = (WIDTH - 100, HEIGHT // 2)
         self.target_angle = 0
         self.obstacles = [
-            CircleObstacle(250, 300, 40),
-            CircleObstacle(400, 300, 60),
-            CircleObstacle(550, 300, 40),
+            CircleObstacle(300, HEIGHT // 2, 80),
+            CircleObstacle(WIDTH // 2, HEIGHT // 2, 120),
+            CircleObstacle(WIDTH - 300, HEIGHT // 2, 80),
         ]
 
 
@@ -200,7 +200,7 @@ def get_segment_intersections(p1, p2, obstacles):
     if dist < 1e-4:
         return []
     ray = Ray(p1, d_vec)
-    
+
     hits = []
     for obs in obstacles:
         L = obs.pos - p1
@@ -208,50 +208,130 @@ def get_segment_intersections(p1, p2, obstacles):
         t_closest = max(0, min(dist, t_proj))
         closest_pt = p1 + ray.direction * t_closest
         dist_to_center = (closest_pt - obs.pos).length()
-        
-        if dist_to_center < obs.radius - 0.1: 
+
+        if dist_to_center < obs.radius - 0.1:
             ts = ray_circle_intersection(ray, obs)
             valid_ts = [t for t in ts if -0.1 < t < dist + 0.1]
             if valid_ts:
-                hits.append({
-                    'obs': obs,
-                    't_min': min(valid_ts),
-                    't_max': max(valid_ts)
-                })
+                hits.append(
+                    {"obs": obs, "t_min": min(valid_ts), "t_max": max(valid_ts)}
+                )
     return hits
 
 
-def find_unintersected_lines(start_p, target_p, obstacles, depth=0):
-    if depth > 10:
-        return []
-        
-    hits = get_segment_intersections(start_p, target_p, obstacles)
-    
-    if not hits:
-        return [(start_p, target_p)]
-        
-    hits.sort(key=lambda h: h['t_min'])
-    first_obs = hits[0]['obs']
-    
-    hits.sort(key=lambda h: h['t_max'], reverse=True)
-    last_obs = hits[0]['obs']
-    
+def find_unintersected_lines(start_p, target_p, obstacles):
     lines = []
-    
-    if first_obs != last_obs:
-        common = get_common_tangents(first_obs, last_obs)
-        for p1, p2 in common:
-            lines.extend(find_unintersected_lines(p1, p2, obstacles, depth + 1))
-            
-    tangents_start = get_circle_tangents(start_p, first_obs)
-    for tp in tangents_start:
-        lines.extend(find_unintersected_lines(start_p, tp, obstacles, depth + 1))
-        
-    tangents_target = get_circle_tangents(target_p, last_obs)
-    for tp in tangents_target:
-        lines.extend(find_unintersected_lines(tp, target_p, obstacles, depth + 1))
-        
+
+    def is_valid(p1, p2):
+        hits = get_segment_intersections(p1, p2, obstacles)
+        return len(hits) == 0
+
+    if is_valid(start_p, target_p):
+        lines.append((start_p, target_p))
+
+    for obs in obstacles:
+        tangents_start = get_circle_tangents(start_p, obs)
+        for tp in tangents_start:
+            if is_valid(start_p, tp):
+                lines.append((start_p, tp))
+
+        tangents_target = get_circle_tangents(target_p, obs)
+        for tp in tangents_target:
+            if is_valid(tp, target_p):
+                lines.append((tp, target_p))
+
+    for i in range(len(obstacles)):
+        for j in range(i + 1, len(obstacles)):
+            common = get_common_tangents(obstacles[i], obstacles[j])
+            for p1, p2 in common:
+                if is_valid(p1, p2):
+                    lines.append((p1, p2))
+
     return lines
+
+
+def find_shortest_path_dfs(lines, start_p, target_p, obstacles):
+    import math
+    from collections import defaultdict
+
+    def round_pt(pt):
+        return (round(pt.x, 2), round(pt.y, 2))
+
+    graph = defaultdict(list)
+    nodes = {}
+
+    for p1, p2 in lines:
+        rp1, rp2 = round_pt(p1), round_pt(p2)
+        dist = (p1 - p2).length()
+        nodes[rp1] = p1
+        nodes[rp2] = p2
+        if rp1 != rp2:
+            # Check if this edge is already in the graph to avoid duplicates
+            if not any(n_key == rp2 for n_key, _, _, _, _ in graph[rp1]):
+                graph[rp1].append((rp2, dist, p1, p2, None))
+                graph[rp2].append((rp1, dist, p2, p1, None))
+
+    nodes_list = list(nodes.items())
+    for i in range(len(nodes_list)):
+        for j in range(i + 1, len(nodes_list)):
+            rk1, p1 = nodes_list[i]
+            rk2, p2 = nodes_list[j]
+            if rk1 != rk2:
+                # Check if they are on the same obstacle
+                for obs in obstacles:
+                    d1 = (p1 - obs.pos).length()
+                    d2 = (p2 - obs.pos).length()
+                    if abs(d1 - obs.radius) < 0.1 and abs(d2 - obs.radius) < 0.1:
+                        v1 = (p1 - obs.pos).normalize()
+                        v2 = (p2 - obs.pos).normalize()
+                        dot = max(-1.0, min(1.0, v1.dot(v2)))
+                        angle = math.acos(dot)
+                        dist = angle * obs.radius
+                        if not any(n_key == rk2 for n_key, _, _, _, _ in graph[rk1]):
+                            graph[rk1].append((rk2, dist, p1, p2, obs))
+                            graph[rk2].append((rk1, dist, p2, p1, obs))
+                        break
+
+    start_key = round_pt(start_p)
+    target_key = round_pt(target_p)
+
+    if start_key not in nodes:
+        if len(lines) == 1:
+            return [(start_p, target_p, None)]
+        return None
+
+    shortest_path = None
+    min_dist = float("inf")
+    best_dist = {}
+
+    def dfs(current_key, current_dist, current_path, visited):
+        nonlocal shortest_path, min_dist
+
+        if current_dist >= min_dist:
+            return
+
+        # Prune branches that are worse than previously found paths to this node
+        if current_key in best_dist and current_dist >= best_dist[current_key]:
+            return
+        best_dist[current_key] = current_dist
+
+        if current_key == target_key:
+            min_dist = current_dist
+            shortest_path = list(current_path)
+            return
+
+        for next_key, dist, orig_p1, orig_p2, obs in sorted(
+            graph[current_key], key=lambda x: x[1]
+        ):
+            if next_key not in visited:
+                visited.add(next_key)
+                current_path.append((orig_p1, orig_p2, obs))
+                dfs(next_key, current_dist + dist, current_path, visited)
+                current_path.pop()
+                visited.remove(next_key)
+
+    dfs(start_key, 0, [], {start_key})
+    return shortest_path
 
 
 def draw_state(screen, state):
@@ -274,19 +354,48 @@ def draw_state(screen, state):
     # 5. Recursive pathfinding
     start_p = pygame.Vector2(state.start_pos)
     target_p = pygame.Vector2(state.target_pos)
-    
+
     lines = find_unintersected_lines(start_p, target_p, state.obstacles)
-    
+
     for p1, p2 in lines:
         pygame.draw.line(screen, (0, 255, 0), p1, p2, 1)
         pygame.draw.circle(screen, (0, 255, 0), (int(p1.x), int(p1.y)), 3)
         pygame.draw.circle(screen, (0, 255, 0), (int(p2.x), int(p2.y)), 3)
 
+    # 6. DFS Shortest Path
+    shortest_path = find_shortest_path_dfs(lines, start_p, target_p, state.obstacles)
+    if shortest_path:
+        import math
+
+        for p1, p2, obs in shortest_path:
+            if obs:
+                # Draw arc along the obstacle
+                v1 = p1 - obs.pos
+                v2 = p2 - obs.pos
+                angle1 = math.atan2(v1.y, v1.x)
+                angle2 = math.atan2(v2.y, v2.x)
+                diff = (angle2 - angle1) % (2 * math.pi)
+                if diff > math.pi:
+                    diff -= 2 * math.pi
+                steps = max(2, int(abs(diff) * obs.radius / 5))
+                points = []
+                for i in range(steps + 1):
+                    t = i / steps
+                    a = angle1 + diff * t
+                    points.append(
+                        obs.pos + pygame.Vector2(math.cos(a), math.sin(a)) * obs.radius
+                    )
+                if len(points) > 1:
+                    pygame.draw.lines(screen, (255, 215, 0), False, points, 4)
+            else:
+                pygame.draw.line(screen, (255, 215, 0), p1, p2, 4)
+
 
 def main():
     # Initialize Pygame
     pygame.init()
-    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.RESIZABLE)
+    virtual_screen = pygame.Surface((WIDTH, HEIGHT))
     pygame.display.set_caption("Ray Circle Intersection")
     clock = pygame.time.Clock()
 
@@ -296,21 +405,39 @@ def main():
     while running:
         # Event handling
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
+            if event.type == pygame.MOUSEMOTION:
+                win_w, win_h = screen.get_size()
+                mapped_pos = (
+                    event.pos[0] * (WIDTH / win_w),
+                    event.pos[1] * (HEIGHT / win_h),
+                )
+                state.start_pos = mapped_pos
+                # Update start angle to face the target
+                dx = state.target_pos[0] - state.start_pos[0]
+                dy = state.target_pos[1] - state.start_pos[1]
+                state.start_angle = math.degrees(math.atan2(dy, dx))
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                # Map physical mouse position to virtual screen resolution
+                win_w, win_h = screen.get_size()
+                mapped_pos = (
+                    event.pos[0] * (WIDTH / win_w),
+                    event.pos[1] * (HEIGHT / win_h),
+                )
+
                 if event.button == 1:  # Left click
-                    state.target_pos = event.pos
-                elif event.button == 3:  # Right click
-                    state.start_pos = event.pos
+                    state.target_pos = mapped_pos
 
                 # Update start angle to face the target
                 dx = state.target_pos[0] - state.start_pos[0]
                 dy = state.target_pos[1] - state.start_pos[1]
                 state.start_angle = math.degrees(math.atan2(dy, dx))
 
-        # Draw the current state
-        draw_state(screen, state)
+        # Draw the current state to the virtual screen
+        draw_state(virtual_screen, state)
+
+        # Scale the virtual screen to the actual screen size and blit
+        scaled_screen = pygame.transform.scale(virtual_screen, screen.get_size())
+        screen.blit(scaled_screen, (0, 0))
 
         # Update the display
         pygame.display.flip()
